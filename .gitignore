@@ -1,1 +1,12 @@
 *.pyc
+__pycache__/
+*.py[cod]
+
+# 本项目运行时会下载/生成较大的模型、素材和结果文件，默认不纳入版本控制。
+models/
+third_party/
+yolov8*.pt
+data/input/*.mp4
+data/input/*.avi
+outputs/
+benchmarks/

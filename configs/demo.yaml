@@ -35,6 +35,13 @@ projection:
   filter_min_z: 0.3
   filter_max_z: 25.0
 
+filtering:
+  # 进阶项 B：在 GPU 上做边缘保持邻域统计滤波，减少深度突变带来的点云毛刺。
+  enabled: true
+  radius: 1
+  depth_jump_threshold: 1.2
+  min_neighbors: 3
+
 runtime:
   device: cuda
   max_frames: 120
@@ -44,6 +51,14 @@ runtime:
   use_yolo: true
   allow_fallback_depth: true
   save_ply_interval: 60
+
+visualization:
+  # 进阶项 C：本地桌面演示时可打开 Open3D 实时交互窗口；远程/无显示器环境建议保持 false。
+  live_open3d: false
+
+evaluation:
+  # 每次 run_demo/benchmark 结束后自动生成自评报告。
+  enabled: true
 
 decision:
   # 画面中心区域通常更接近车辆/机器人前进方向，局部规则决策优先关注这一带。

@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 
 from .config import ensure_project_dirs, load_config, resolve_path
+from .evaluation import evaluate_benchmark_run
+from .filters import DepthFilter
 from .projector import PointCloudProjector
 from .utils import relative_depth_to_pseudo_z, resize_keep_aspect, write_csv
 
@@ -37,6 +39,7 @@ def synthetic_frame(width: int = 960, height: int = 540) -> np.ndarray:
 def run_benchmark(config: dict, video_path: Path, max_frames: int) -> None:
     ensure_project_dirs(config)
     proj_cfg = config["projection"]
+    filter_cfg = config["filtering"]
     runtime = config["runtime"]
     model_cfg = config["model"]
 
@@ -47,6 +50,12 @@ def run_benchmark(config: dict, video_path: Path, max_frames: int) -> None:
         max_z=float(proj_cfg["filter_max_z"]),
         num_classes=len(model_cfg["yolo_classes"]),
     )
+    depth_filter = DepthFilter(
+        enabled=bool(filter_cfg["enabled"]),
+        radius=int(filter_cfg["radius"]),
+        jump_threshold=float(filter_cfg["depth_jump_threshold"]),
+        min_neighbors=int(filter_cfg["min_neighbors"]),
+    )
 
     cap = cv2.VideoCapture(str(video_path))
     use_video = cap.isOpened()
@@ -55,6 +64,7 @@ def run_benchmark(config: dict, video_path: Path, max_frames: int) -> None:
     # 先做一次 GPU warm-up，避免 JIT 编译时间污染正式统计。
     warm = synthetic_frame()
     warm_z = frame_to_fast_depth(warm, float(proj_cfg["pseudo_min_z"]), float(proj_cfg["pseudo_max_z"]), bool(proj_cfg["invert_depth"]))
+    depth_filter.filter_cuda(warm_z)
     projector.project_cuda(warm_z, warm)
 
     for frame_index in range(max_frames):
@@ -72,6 +82,8 @@ def run_benchmark(config: dict, video_path: Path, max_frames: int) -> None:
             max_z=float(proj_cfg["pseudo_max_z"]),
             invert=bool(proj_cfg["invert_depth"]),
         )
+        filtered = depth_filter.filter_auto(z_map, prefer_cuda=runtime["device"] == "cuda")
+        z_map = filtered.z_map
         cpu_loop = projector.project_cpu_loop(z_map, frame)
         cpu_numpy = projector.project_cpu(z_map, frame)
         gpu = projector.project_cuda(z_map, frame)
@@ -81,6 +93,8 @@ def run_benchmark(config: dict, video_path: Path, max_frames: int) -> None:
                 "frame": frame_index,
                 "cpu_loop_ms": round(cpu_loop.elapsed_ms, 3),
                 "cpu_numpy_ms": round(cpu_numpy.elapsed_ms, 3),
+                "filter_ms": round(filtered.elapsed_ms, 3),
+                "filter_backend": filtered.backend,
                 "gpu_ms": round(gpu.elapsed_ms, 3),
                 "speedup": round(speedup, 3),
                 "points": int(gpu.points_xyz.shape[0]),
@@ -98,12 +112,17 @@ def run_benchmark(config: dict, video_path: Path, max_frames: int) -> None:
     if rows:
         avg_cpu = float(np.mean([row["cpu_loop_ms"] for row in rows]))
         avg_numpy = float(np.mean([row["cpu_numpy_ms"] for row in rows]))
+        avg_filter = float(np.mean([row["filter_ms"] for row in rows]))
         avg_gpu = float(np.mean([row["gpu_ms"] for row in rows]))
         avg_speedup = avg_cpu / avg_gpu if avg_gpu > 0 else 0.0
         print(f"CPU 串行平均耗时：{avg_cpu:.3f} ms")
         print(f"CPU NumPy 平均耗时：{avg_numpy:.3f} ms")
+        print(f"GPU 滤波平均耗时：{avg_filter:.3f} ms")
         print(f"GPU CUDA 平均耗时：{avg_gpu:.3f} ms")
         print(f"串行 CPU → CUDA 平均加速比：{avg_speedup:.2f}x")
+    if bool(config["evaluation"]["enabled"]):
+        report = evaluate_benchmark_run(config, rows, benchmark_dir)
+        print(f"基准自评报告：{benchmark_dir / 'self_evaluation.md'}（{report.level}，{report.score}/100）")
     print(f"基准测试结果已写入：{csv_path}")
 
 

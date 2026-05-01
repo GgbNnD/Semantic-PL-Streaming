@@ -8,6 +8,9 @@ import cv2
 from .config import ensure_project_dirs, load_config, resolve_path
 from .decision import LocalRuleDecisionClient, compute_scene_metrics, save_decision_artifacts
 from .depth_estimator import DepthAnythingV2Estimator
+from .evaluation import evaluate_demo_run
+from .filters import DepthFilter
+from .live_viewer import Open3DLiveViewer
 from .projector import PointCloudProjector
 from .semantic_detector import SemanticDetector, draw_detections
 from .utils import relative_depth_to_pseudo_z, resize_keep_aspect, safe_video_writer, write_csv
@@ -48,6 +51,7 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
     runtime = config["runtime"]
     model_cfg = config["model"]
     proj_cfg = config["projection"]
+    filter_cfg = config["filtering"]
     decision_cfg = config["decision"]
     max_frames = max_frames or int(runtime["max_frames"])
 
@@ -74,10 +78,17 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
         max_z=float(proj_cfg["filter_max_z"]),
         num_classes=len(model_cfg["yolo_classes"]),
     )
+    depth_filter = DepthFilter(
+        enabled=bool(filter_cfg["enabled"]),
+        radius=int(filter_cfg["radius"]),
+        jump_threshold=float(filter_cfg["depth_jump_threshold"]),
+        min_neighbors=int(filter_cfg["min_neighbors"]),
+    )
     decision_client = LocalRuleDecisionClient(
         danger_z=float(decision_cfg["danger_z"]),
         warning_z=float(decision_cfg["warning_z"]),
     )
+    viewer = Open3DLiveViewer(enabled=bool(config["visualization"]["live_open3d"]))
 
     rows: list[dict[str, object]] = []
     writer = None
@@ -99,6 +110,8 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
             max_z=float(proj_cfg["pseudo_max_z"]),
             invert=bool(proj_cfg["invert_depth"]),
         )
+        filter_result = depth_filter.filter_auto(z_map, prefer_cuda=runtime["device"] == "cuda")
+        z_map = filter_result.z_map
 
         semantic_result = semantic_detector.predict(frame)
         projection = projector.project_auto(
@@ -107,13 +120,14 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
             semantic_result.label_mask,
             prefer_cuda=runtime["device"] == "cuda",
         )
+        viewer.update(projection.points_xyz, projection.colors_rgb)
 
-        depth_vis = depth_to_heatmap(depth_result.depth)
+        depth_vis = depth_to_heatmap(z_map)
         semantic_vis = semantic_overlay(draw_detections(frame, semantic_result.detections), semantic_result.label_mask)
         topdown_vis = render_topdown(projection.points_xyz, projection.colors_rgb)
         panel = compose_demo_panel(
             add_panel_title(frame, "Input video"),
-            add_panel_title(depth_vis, f"Depth ({depth_result.backend})"),
+            add_panel_title(depth_vis, f"Filtered depth ({filter_result.backend})"),
             add_panel_title(semantic_vis, f"Semantic ({semantic_result.backend})"),
             add_panel_title(topdown_vis, f"CUDA point cloud ({projection.backend})"),
         )
@@ -139,6 +153,7 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
         )
         latest_metrics["frame_index"] = frame_index
         latest_metrics["depth_backend"] = depth_result.backend
+        latest_metrics["filter_backend"] = filter_result.backend
         latest_metrics["projection_backend"] = projection.backend
         latest_metrics["point_count"] = int(projection.points_xyz.shape[0])
 
@@ -146,10 +161,12 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
             {
                 "frame": frame_index,
                 "depth_ms": round(depth_result.elapsed_ms, 3),
+                "filter_ms": round(filter_result.elapsed_ms, 3),
                 "semantic_ms": round(semantic_result.elapsed_ms, 3),
                 "projection_ms": round(projection.elapsed_ms, 3),
                 "point_count": int(projection.points_xyz.shape[0]),
                 "depth_backend": depth_result.backend,
+                "filter_backend": filter_result.backend,
                 "semantic_backend": semantic_result.backend,
                 "projection_backend": projection.backend,
             }
@@ -159,6 +176,7 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
             print(f"已处理 {frame_index} 帧")
 
     cap.release()
+    viewer.close()
     if writer is not None:
         writer.release()
 
@@ -176,6 +194,10 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
         f.write(f"- 已处理帧数：{frame_index}\n")
         f.write(f"- 决策结果：\n\n{decision_text}\n")
         f.write("\n说明：当前深度是相对深度映射出的 Pseudo-LiDAR 伪距离，并非真实米制深度。\n")
+
+    if bool(config["evaluation"]["enabled"]):
+        report = evaluate_demo_run(config, rows, output_dir, frame_index, expected_frames=max_frames)
+        print(f"自评报告：{output_dir / 'self_evaluation.md'}（{report.level}，{report.score}/100）")
 
     print(f"演示视频已生成：{output_video}")
     print(f"性能数据已生成：{performance_csv}")
@@ -196,4 +218,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

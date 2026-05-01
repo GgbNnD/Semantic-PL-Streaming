@@ -15,10 +15,13 @@
 - 单目视频逐帧深度估计：默认使用 Depth-Anything-V2 Small `vits`。
 - 语义目标检测：默认使用 Ultralytics YOLO-World `yolov8s-worldv2.pt`。
 - 点云反投影：提供纯 Python 串行 CPU、NumPy CPU、Numba CUDA 三种实现。
+- 进阶深度滤波：提供 CUDA 边缘保持邻域统计滤波，减少点云毛刺。
 - 并行性能量化：输出 CPU 串行到 CUDA 的耗时、FPS 和加速比。
 - 可视化输出：生成原视频、深度热力图、语义叠加图、点云俯视图组成的 2x2 演示视频。
 - 3D 文件输出：关键帧点云保存为 Open3D 可打开的 `.ply` 文件。
+- 交互查看：支持 Open3D 打开 PLY，也可配置实时 Open3D 点云窗口。
 - 无 API 决策：根据最近语义目标、中心通道占比和伪距离输出本地避障建议。
+- 自动自评：每次演示/基准测试结束后生成效果评估和改进建议。
 
 ## 目录结构
 
@@ -29,7 +32,8 @@
 ├── data/
 │   └── input/                    # 默认演示视频目录
 ├── docs/
-│   └── 使用说明.md               # 简短运行说明
+│   ├── 使用说明.md               # 简短运行说明
+│   └── 效果标准与自评.md         # 好效果标准和自评逻辑
 ├── models/                       # Depth-Anything-V2 权重
 ├── outputs/                      # run_demo 输出
 ├── benchmarks/                   # benchmark 输出
@@ -40,9 +44,13 @@
 │   ├── decide.py                  # 单独运行本地决策
 │   ├── config.py                  # 配置读取与路径解析
 │   ├── depth_estimator.py         # Depth-Anything-V2 和 fallback 深度
+│   ├── filters.py                 # CUDA 深度统计滤波
 │   ├── semantic_detector.py       # YOLO-World 语义检测与颜色映射
 │   ├── projector.py               # CPU/NumPy/CUDA 反投影核心
 │   ├── visualization.py           # 深度图、语义图、点云预览与 PLY 输出
+│   ├── live_viewer.py             # 可选 Open3D 实时窗口
+│   ├── view_pointcloud.py         # 打开 PLY 点云进行交互式查看
+│   ├── evaluation.py              # 每次运行后的自动自评报告
 │   ├── decision.py                # 本地规则决策与云端 VLM 占位接口
 │   └── utils.py                   # 下载、视频、CSV、图像工具函数
 ├── tests/
@@ -117,6 +125,12 @@ python -m src.benchmark --video data/input/demo.mp4 --max-frames 60
 python -m src.decide --snapshot outputs/keyframes/frame_0000.jpg
 ```
 
+打开最近生成的 PLY 点云：
+
+```bash
+python -m src.view_pointcloud
+```
+
 ## 输出文件
 
 `run_demo` 会生成：
@@ -128,10 +142,12 @@ python -m src.decide --snapshot outputs/keyframes/frame_0000.jpg
 - `outputs/decision/latest_scene_metrics.json`：本地决策使用的结构化指标。
 - `outputs/decision/decision_report.txt`：中文风险等级与避障建议。
 - `outputs/run_summary.md`：本次运行摘要。
+- `outputs/self_evaluation.md`：本次演示效果自评和下一步改进建议。
 
 `benchmark` 会生成：
 
 - `benchmarks/results.csv`：`cpu_loop_ms`、`cpu_numpy_ms`、`gpu_ms`、`speedup`、点数等。
+- `benchmarks/self_evaluation.md`：基准测试自评。
 
 当前一次短测试中，串行 CPU 到 CUDA 的平均加速比约为 `12.41x`。NumPy CPU 通常比 CUDA 更快，是因为 NumPy 已经调用底层 C 向量化实现；课程报告里建议把“纯 Python 串行 CPU -> CUDA”作为并行加速对比，把 NumPy 作为工程参考。
 
@@ -147,13 +163,18 @@ python -m src.decide --snapshot outputs/keyframes/frame_0000.jpg
 - `projection.stride`：点云采样步长，越小点越密，计算和渲染越慢。
 - `projection.fov_degrees`：没有相机标定时用于反推内参的水平视场角。
 - `projection.pseudo_min_z` / `projection.pseudo_max_z`：相对深度映射到伪距离的范围。
+- `filtering.enabled`：是否启用 CUDA 深度统计滤波。
+- `filtering.depth_jump_threshold`：邻域像素距离差阈值，越小越保边，越大越平滑。
+- `visualization.live_open3d`：是否开启实时 Open3D 交互窗口，远程终端建议保持 `false`。
+- `evaluation.enabled`：是否在每次运行后自动生成自评报告。
 - `decision.danger_z` / `decision.warning_z`：本地规则决策阈值。
 
 建议调参顺序：
 
 1. 先调 `runtime.process_width` 和 `projection.stride`，让演示速度稳定。
 2. 再调 `model.yolo_conf`，减少误检或漏检。
-3. 最后根据画面效果调 `projection.invert_depth` 和伪距离范围。
+3. 然后调 `filtering.depth_jump_threshold`，让点云更平滑但不过度糊掉边缘。
+4. 最后根据画面效果调 `projection.invert_depth` 和伪距离范围。
 
 ## 核心数据流
 
@@ -189,7 +210,15 @@ python -m src.decide --snapshot outputs/keyframes/frame_0000.jpg
 
 当前采用检测框区域给点云赋标签，不是像素级分割。这样实现轻量稳定，适合课程演示；后续可以替换为 SAM2 或实例分割模型。
 
-### 4. CUDA 点云反投影
+### 4. CUDA 深度统计滤波
+
+入口：`src/filters.py`
+
+`DepthFilter.filter_auto(z_map)` 会在 CUDA 可用时调用 `cuda_filter`。每个线程负责一个像素，只统计与中心像素差异不超过阈值的邻居，减少深度突变点，同时尽量保留障碍物边界。
+
+这对应课程方案中的“统计学并行滤波”进阶项。
+
+### 5. CUDA 点云反投影
 
 入口：`src/projector.py`
 
@@ -209,9 +238,9 @@ Y = (v - cy) * Z / fy
 
 如果要修改 CUDA kernel，优先看 `_back_project_kernel` 中关于线程网格、深度过滤、语义颜色和 BGR/RGB 转换的中文注释。
 
-### 5. 可视化
+### 6. 可视化
 
-入口：`src/visualization.py`
+入口：`src/visualization.py`、`src/live_viewer.py`、`src/view_pointcloud.py`
 
 主要输出：
 
@@ -220,10 +249,12 @@ Y = (v - cy) * Z / fy
 - 点云俯视图：`render_topdown`
 - PLY 点云：`save_point_cloud_ply`
 - 关键帧 3D 散点图：`save_point_cloud_preview`
+- 可选实时窗口：`Open3DLiveViewer`
+- 离线交互查看：`python -m src.view_pointcloud`
 
 视频里的点云图是快速俯视投影，适合逐帧输出；`.ply` 文件才是可在 Open3D/CloudCompare 中查看的 3D 点云。
 
-### 6. 决策层
+### 7. 决策层
 
 入口：`src/decision.py`
 
@@ -234,6 +265,14 @@ Y = (v - cy) * Z / fy
 - 根据 `danger_z` 和 `warning_z` 输出中文风险等级和建议。
 
 `CloudVLMDecisionClient` 是云端 VLM 占位类。后续接入 Qwen-VL 时建议保持 `DecisionClient.analyze(metrics, snapshot_path)` 这个接口不变。
+
+### 8. 自动自评
+
+入口：`src/evaluation.py`
+
+每次 `run_demo` 后会写出 `outputs/self_evaluation.md`，每次 `benchmark` 后会写出 `benchmarks/self_evaluation.md`。自评会检查视频、点云、后端、耗时、决策报告和加速比，并给出下一步改进建议。
+
+更详细的效果标准见 [docs/效果标准与自评.md](docs/效果标准与自评.md)。
 
 ## 后续开发建议
 
@@ -345,6 +384,7 @@ python -m src.benchmark --video data/input/demo.mp4 --max-frames 20
 - `benchmarks/results.csv` 有 CPU/GPU 对比。
 - `outputs/pointclouds/*.ply` 非空。
 - `outputs/decision/decision_report.txt` 有中文风险建议。
+- `outputs/self_evaluation.md` 对本次运行给出分数、问题和改进建议。
 
 ## 常见问题
 

@@ -45,6 +45,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "filter_min_z": 0.3,
         "filter_max_z": 25.0,
     },
+    "filtering": {
+        "enabled": True,
+        "radius": 1,
+        "depth_jump_threshold": 1.2,
+        "min_neighbors": 3,
+    },
     "runtime": {
         "device": "cuda",
         "max_frames": 120,
@@ -54,6 +60,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "use_yolo": True,
         "allow_fallback_depth": True,
         "save_ply_interval": 60,
+    },
+    "visualization": {
+        "live_open3d": False,
+    },
+    "evaluation": {
+        "enabled": True,
     },
     "decision": {
         "center_band_ratio": 0.40,
@@ -122,4 +134,3 @@ def ensure_project_dirs(config: dict[str, Any]) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
         else:
             target.mkdir(parents=True, exist_ok=True)
-
