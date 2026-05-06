@@ -74,7 +74,7 @@ class DepthAnythingV2Estimator:
         self,
         repo_dir: str | Path,
         checkpoint_path: str | Path,
-        encoder: str = "vits",
+        encoder: str = "vitl",
         input_size: int = 518,
         device: str = "cuda",
         allow_fallback: bool = True,
@@ -136,4 +136,3 @@ class DepthAnythingV2Estimator:
             depth = self.model.infer_image(frame_bgr, self.input_size)
         depth = depth.astype(np.float32)
         return DepthResult(depth=depth, backend=self.backend, elapsed_ms=now_ms() - start)
-

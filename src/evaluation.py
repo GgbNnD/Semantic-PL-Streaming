@@ -87,11 +87,11 @@ def evaluate_demo_run(
     filter_backends = {str(row.get("filter_backend")) for row in rows if row.get("filter_backend") is not None}
 
     if "official" in depth_backends:
-        strengths.append("深度估计使用官方 Depth-Anything-V2 权重。")
+        strengths.append(f"深度估计使用官方 Depth-Anything-V2 {config['model']['depth_encoder']} 权重。")
     else:
         score -= 15
         issues.append("深度估计未使用 official 后端，可能处于 fallback 模式。")
-        improvements.append("运行 `python -m src.prepare_assets`，确认 `models/depth_anything_v2_vits.pth` 存在。")
+        improvements.append(f"运行 `python -m src.prepare_assets`，确认 `{config['paths']['depth_checkpoint']}` 存在。")
 
     if "cuda" in projection_backends:
         strengths.append("点云反投影使用 CUDA kernel。")
@@ -111,12 +111,12 @@ def evaluate_demo_run(
         issues.append(f"深度滤波未使用 CUDA：{sorted(filter_backends)}。")
         improvements.append("检查 Numba CUDA 是否可用。")
 
-    if "yolo-world" in semantic_backends:
-        strengths.append("语义检测使用 YOLO-World，点云可按类别着色。")
+    if "sam3" in semantic_backends:
+        strengths.append("语义分割使用 SAM 3 像素级 mask，点云可按类别着色。")
     else:
         score -= 10
-        issues.append("语义检测没有产生 YOLO-World 输出。")
-        improvements.append("确认 `yolov8s-worldv2.pt` 已下载，或降低 `model.yolo_conf`。")
+        issues.append("语义分割没有产生 SAM 3 输出。")
+        improvements.append("确认 `third_party/sam3/sam3.pt` 存在、Ultralytics 版本为 8.3.237+，或降低 `model.sam3_conf`。")
 
     avg_depth_ms = _average(rows, "depth_ms")
     avg_semantic_ms = _average(rows, "semantic_ms")
@@ -215,7 +215,7 @@ def write_demo_report(report: QualityReport, output_dir: Path) -> None:
         f.write("# 运行效果自评\n\n")
         f.write("## 什么算较好的效果\n\n")
         f.write("- 深度热力图应与画面前后关系一致：近处目标颜色变化明显，远处背景连续。\n")
-        f.write("- 语义图应能框出主要人/车/障碍物，并在点云中呈现对应类别颜色。\n")
+        f.write("- 语义图应能以 SAM 3 mask 覆盖主要人/车/障碍物，并在点云中呈现对应类别颜色。\n")
         f.write("- 点云俯视图应稳定、非空，前方空间结构能看出近远层次。\n")
         f.write("- 性能表应显示 CUDA 后端生效，并能给出串行 CPU 到 CUDA 的加速比。\n")
         f.write("- 决策报告应指出最近风险目标、是否处于中心通道以及建议动作。\n\n")

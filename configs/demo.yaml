@@ -1,27 +1,31 @@
 paths:
   third_party_dir: third_party
   depth_repo_dir: third_party/Depth-Anything-V2
-  depth_checkpoint: models/depth_anything_v2_vits.pth
+  depth_checkpoint: models/depth_anything_v2_vitl.pth
+  sam3_checkpoint: third_party/sam3/sam3.pt
   input_video: data/input/demo.mp4
   output_dir: outputs
   benchmark_dir: benchmarks
 
 model:
-  # vits 是 24.8M 参数的小模型，适合 RTX 4060 8GB 上做课堂实时/准实时演示。
-  depth_encoder: vits
+  # vitl 是 Depth-Anything-V2 Large 高精度权重，适合强调单目深度质量。
+  depth_encoder: vitl
   depth_input_size: 518
-  yolo_model: yolov8s-worldv2.pt
-  yolo_imgsz: 640
-  yolo_conf: 0.18
-  yolo_classes:
+  # SAM 3 通过文本概念提示输出像素级 mask；权重放在 third_party/sam3/sam3.pt。
+  # SAM 3 stride 为 14，644 可避免 Ultralytics 把 640 自动调整为 644 的运行时警告。
+  sam3_imgsz: 644
+  sam3_conf: 0.25
+  sam3_half: true
+  sam3_classes:
+    - road
+    - pavement
+    - asphalt road
+    - sidewalk
+    - grass
     - person
     - car
-    - truck
-    - bus
-    - motorcycle
-    - bicycle
     - traffic cone
-    - obstacle
+
 
 projection:
   # 每 stride 个像素采一个点。点云演示不需要每个像素都投影，降采样可以显著降低渲染压力。
@@ -48,7 +52,7 @@ runtime:
   output_fps: 15
   keyframe_interval: 30
   process_width: 960
-  use_yolo: true
+  use_sam3: true
   allow_fallback_depth: true
   save_ply_interval: 60
 

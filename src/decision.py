@@ -28,7 +28,7 @@ def compute_scene_metrics(
     detections: list[Detection],
     center_band_ratio: float,
 ) -> dict[str, Any]:
-    """根据检测框和伪深度图计算本地决策所需指标。
+    """根据语义实例外接框和伪深度图计算本地决策所需指标。
 
     由于当前没有 VLM API，本地规则重点关注三个量：最近障碍物、它是否落在画面
     中心通道、以及它的伪距离 Z。Z 越小表示越近。

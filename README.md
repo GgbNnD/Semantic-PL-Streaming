@@ -4,7 +4,7 @@
 
 ```text
 视频输入 -> Depth-Anything-V2 深度估计 -> 相对深度转 Pseudo-LiDAR 伪距离
-       -> YOLO-World 语义检测 -> Numba CUDA 点云反投影
+       -> SAM 3 像素级语义分割 -> Numba CUDA 点云反投影
        -> OpenCV/Open3D 可视化 -> 本地规则决策 -> 性能报告
 ```
 
@@ -12,8 +12,8 @@
 
 ## 当前能力
 
-- 单目视频逐帧深度估计：默认使用 Depth-Anything-V2 Small `vits`。
-- 语义目标检测：默认使用 Ultralytics YOLO-World `yolov8s-worldv2.pt`。
+- 单目视频逐帧深度估计：默认使用 Depth-Anything-V2 Large `vitl` 高精度权重。
+- 语义分割：默认使用 Ultralytics SAM 3 和本地 `third_party/sam3/sam3.pt` 权重输出像素级 mask。
 - 点云反投影：提供纯 Python 串行 CPU、NumPy CPU、Numba CUDA 三种实现。
 - 进阶深度滤波：提供 CUDA 边缘保持邻域统计滤波，减少点云毛刺。
 - 并行性能量化：输出 CPU 串行到 CUDA 的耗时、FPS 和加速比。
@@ -45,7 +45,7 @@
 │   ├── config.py                  # 配置读取与路径解析
 │   ├── depth_estimator.py         # Depth-Anything-V2 和 fallback 深度
 │   ├── filters.py                 # CUDA 深度统计滤波
-│   ├── semantic_detector.py       # YOLO-World 语义检测与颜色映射
+│   ├── semantic_detector.py       # SAM 3 语义分割与颜色映射
 │   ├── projector.py               # CPU/NumPy/CUDA 反投影核心
 │   ├── visualization.py           # 深度图、语义图、点云预览与 PLY 输出
 │   ├── live_viewer.py             # 可选 Open3D 实时窗口
@@ -56,7 +56,8 @@
 ├── tests/
 │   └── test_projector.py          # 投影器单元测试
 └── third_party/
-    └── Depth-Anything-V2/         # 官方仓库，由 prepare_assets 克隆
+    ├── Depth-Anything-V2/         # 官方仓库，由 prepare_assets 克隆
+    └── sam3/                      # SAM 3 本地权重目录，默认读取 sam3.pt
 ```
 
 ## 环境
@@ -69,7 +70,7 @@
 - PyTorch `2.9.1+cu130`
 - Numba CUDA 可用
 - Open3D 可用
-- Ultralytics YOLO-World 可用
+- Ultralytics SAM 3 可用（需要 `ultralytics>=8.3.237`）
 
 新开终端时先进入环境：
 
@@ -81,7 +82,7 @@ cd /home/cells/ai
 如果换到一台新机器，至少需要安装：
 
 ```bash
-python -m pip install -U numba open3d transformers opencv-python ultralytics matplotlib pyyaml requests
+python -m pip install -U numba open3d transformers opencv-python "ultralytics>=8.3.237" timm matplotlib pyyaml requests
 ```
 
 注意：PyTorch CUDA 版本最好按机器 CUDA/驱动重新安装，不建议盲目复制 pip 命令。
@@ -97,9 +98,9 @@ python -m src.prepare_assets
 该命令会做几件事：
 
 - 克隆 Depth-Anything-V2 官方仓库到 `third_party/Depth-Anything-V2`
-- 下载 `depth_anything_v2_vits.pth` 到 `models/`
+- 下载 `depth_anything_v2_vitl.pth` 到 `models/`
 - 下载 OpenCV 官方 `vtest.avi` 并转成默认 `data/input/demo.mp4`
-- 预热 YOLO-World 权重下载
+- 检查 `third_party/sam3/sam3.pt` 和 Ultralytics SAM 3 接口是否可用
 
 运行完整演示：
 
@@ -136,7 +137,7 @@ python -m src.view_pointcloud
 `run_demo` 会生成：
 
 - `outputs/demo_side_by_side.mp4`：2x2 演示视频。
-- `outputs/performance.csv`：逐帧深度估计、语义检测、CUDA 投影耗时。
+- `outputs/performance.csv`：逐帧深度估计、语义分割、CUDA 投影耗时。
 - `outputs/keyframes/`：关键帧、深度图、语义图、点云预览。
 - `outputs/pointclouds/*.ply`：Open3D 点云文件。
 - `outputs/decision/latest_scene_metrics.json`：本地决策使用的结构化指标。
@@ -159,7 +160,7 @@ python -m src.view_pointcloud
 
 - `runtime.max_frames`：默认处理帧数。
 - `runtime.process_width`：视频缩放宽度，降低显存和渲染压力。
-- `runtime.use_yolo`：是否启用 YOLO-World。
+- `runtime.use_sam3`：是否启用 SAM 3 语义分割。
 - `projection.stride`：点云采样步长，越小点越密，计算和渲染越慢。
 - `projection.fov_degrees`：没有相机标定时用于反推内参的水平视场角。
 - `projection.pseudo_min_z` / `projection.pseudo_max_z`：相对深度映射到伪距离的范围。
@@ -172,7 +173,7 @@ python -m src.view_pointcloud
 建议调参顺序：
 
 1. 先调 `runtime.process_width` 和 `projection.stride`，让演示速度稳定。
-2. 再调 `model.yolo_conf`，减少误检或漏检。
+2. 再调 `model.sam3_conf`，减少误分割或漏分割。
 3. 然后调 `filtering.depth_jump_threshold`，让点云更平滑但不过度糊掉边缘。
 4. 最后根据画面效果调 `projection.invert_depth` 和伪距离范围。
 
@@ -198,17 +199,17 @@ python -m src.view_pointcloud
 
 重要：当前 `Z` 是 Pseudo-LiDAR 伪距离，不是真实米制深度。没有相机内参、尺度标定或已知距离参照时，不要在报告中写成真实距离。
 
-### 3. 语义检测
+### 3. 语义分割
 
 入口：`src/semantic_detector.py`
 
 `SemanticDetector.predict(frame_bgr)` 返回：
 
-- 检测框列表 `detections`
-- 与图像同尺寸的 `label_mask`
+- 语义实例外接框列表 `detections`
+- 与图像同尺寸的像素级 `label_mask`
 - 推理耗时
 
-当前采用检测框区域给点云赋标签，不是像素级分割。这样实现轻量稳定，适合课程演示；后续可以替换为 SAM2 或实例分割模型。
+当前使用 Ultralytics `SAM3SemanticPredictor`，对配置中的文本概念逐类分割，并把实例 mask 合成为点云可直接索引的标签图。
 
 ### 4. CUDA 深度统计滤波
 
@@ -327,12 +328,12 @@ python -m src.run_demo --video /path/to/your_video.mp4
 
 只有内参还不够得到真实米制距离；还需要深度尺度标定或 metric depth 模型。
 
-### 加入像素级分割
+### 调整 SAM 3 语义分割
 
-当前语义标签来自 YOLO 检测框。若要提高点云语义精度，可以：
+当前语义标签来自 SAM 3 像素级 mask。若要提高点云语义精度，可以：
 
-- 用 YOLO segmentation 模型替换 YOLO-World。
-- 接入 SAM2，根据检测框生成 mask。
+- 在 `model.sam3_classes` 中把类别写成更贴合场景的英文短语。
+- 降低 `model.sam3_conf` 提高召回，或升高它减少误分割。
 - 保持输出为 `label_mask`，这样 `PointCloudProjector` 不需要改。
 
 ### 提高实时性
@@ -342,8 +343,8 @@ python -m src.run_demo --video /path/to/your_video.mp4
 - 增大 `projection.stride`。
 - 降低 `runtime.process_width`。
 - 降低 `model.depth_input_size`。
-- 减少 YOLO 检测类别。
-- 每 N 帧跑一次 YOLO，其他帧复用上一帧标签。
+- 减少 SAM 3 文本概念数量。
+- 每 N 帧跑一次 SAM 3，其他帧复用上一帧标签。
 
 进阶加分项：
 
@@ -363,6 +364,18 @@ python -m py_compile src/*.py
 
 ```bash
 python -m unittest discover -s tests
+```
+
+深度估计和 SAM 3 语义分割的正确性指标测试：
+
+```bash
+python -m unittest tests.test_quality_checks
+```
+
+真实 `vitl`/SAM 3 模型 smoke test 默认跳过；正式验收前可显式加载大模型检查输出契约：
+
+```bash
+RUN_HEAVY_MODEL_TESTS=1 python -m unittest tests.test_model_quality_smoke
 ```
 
 短演示：
@@ -400,9 +413,9 @@ Depth-Anything-V2 的可选加速库提示，不影响运行。当前 PyTorch CU
 
 这是正常现象。NumPy 已经是底层 C 向量化实现，而 `project_cuda` 的计时包含 CPU/GPU 拷贝。课程并行对比建议使用 `cpu_loop_ms` 对比 `gpu_ms`，同时在报告中说明 NumPy 是工程优化参考。
 
-### YOLO-World 第一次运行很慢
+### SAM 3 第一次运行很慢或显存占用高
 
-第一次会下载 YOLO-World 权重和 CLIP 相关权重。下载完成后后续运行会快很多。
+SAM 3 权重约 3.3GB，首次加载和文本特征构建会比较慢。若显存紧张，优先降低 `runtime.process_width`、增大 `projection.stride`，或减少 `model.sam3_classes`。
 
 ### 没有 API key 怎么办
 
@@ -415,6 +428,6 @@ Depth-Anything-V2 的可选加速库提示，不影响运行。当前 PyTorch CU
 ## 参考
 
 - Depth-Anything-V2: https://github.com/DepthAnything/Depth-Anything-V2
-- Ultralytics YOLO-World: https://docs.ultralytics.com/models/yolo-world/
+- Ultralytics SAM 3: https://docs.ultralytics.com/models/sam-3/
 - Numba CUDA: https://numba.readthedocs.io/en/stable/cuda/index.html
 - OpenCV sample video: https://raw.githubusercontent.com/opencv/opencv/master/samples/data/vtest.avi

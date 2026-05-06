@@ -33,6 +33,29 @@ def add_panel_title(image_bgr, title: str):
     return canvas
 
 
+def clean_previous_outputs(output_dir: Path, keyframe_dir: Path, pointcloud_dir: Path, decision_dir: Path) -> None:
+    """清理上一次 run_demo 生成的文件，避免短跑时混入旧关键帧。"""
+
+    for path in [
+        output_dir / "demo_side_by_side.mp4",
+        output_dir / "performance.csv",
+        output_dir / "run_summary.md",
+        output_dir / "self_evaluation.md",
+        decision_dir / "latest_scene_metrics.json",
+        decision_dir / "decision_report.txt",
+    ]:
+        if path.exists():
+            path.unlink()
+
+    for folder, patterns in [
+        (keyframe_dir, ["frame_*.jpg", "depth_*.jpg", "semantic_*.jpg", "pointcloud_*.jpg"]),
+        (pointcloud_dir, ["cloud_*.ply"]),
+    ]:
+        for pattern in patterns:
+            for path in folder.glob(pattern):
+                path.unlink()
+
+
 def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> None:
     """运行完整本地视觉管线。"""
 
@@ -43,6 +66,8 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
     decision_dir = output_dir / "decision"
     keyframe_dir.mkdir(parents=True, exist_ok=True)
     pointcloud_dir.mkdir(parents=True, exist_ok=True)
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    clean_previous_outputs(output_dir, keyframe_dir, pointcloud_dir, decision_dir)
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -54,6 +79,7 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
     filter_cfg = config["filtering"]
     decision_cfg = config["decision"]
     max_frames = max_frames or int(runtime["max_frames"])
+    semantic_classes = model_cfg["sam3_classes"]
 
     depth_estimator = DepthAnythingV2Estimator(
         repo_dir=config["paths"]["depth_repo_dir"],
@@ -64,19 +90,20 @@ def run_demo(config: dict, video_path: Path, max_frames: int | None = None) -> N
         allow_fallback=bool(runtime["allow_fallback_depth"]),
     )
     semantic_detector = SemanticDetector(
-        model_name=model_cfg["yolo_model"],
-        classes=model_cfg["yolo_classes"],
-        conf=float(model_cfg["yolo_conf"]),
-        imgsz=int(model_cfg["yolo_imgsz"]),
+        model_path=config["paths"].get("sam3_checkpoint", "third_party/sam3/sam3.pt"),
+        classes=semantic_classes,
+        conf=float(model_cfg["sam3_conf"]),
+        imgsz=int(model_cfg["sam3_imgsz"]),
         device=runtime["device"],
-        enabled=bool(runtime["use_yolo"]),
+        half=bool(model_cfg.get("sam3_half", True)),
+        enabled=bool(runtime["use_sam3"]),
     )
     projector = PointCloudProjector(
         stride=int(proj_cfg["stride"]),
         fov_degrees=float(proj_cfg["fov_degrees"]),
         min_z=float(proj_cfg["filter_min_z"]),
         max_z=float(proj_cfg["filter_max_z"]),
-        num_classes=len(model_cfg["yolo_classes"]),
+        num_classes=len(semantic_classes),
     )
     depth_filter = DepthFilter(
         enabled=bool(filter_cfg["enabled"]),

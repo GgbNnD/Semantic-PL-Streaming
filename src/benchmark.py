@@ -42,13 +42,14 @@ def run_benchmark(config: dict, video_path: Path, max_frames: int) -> None:
     filter_cfg = config["filtering"]
     runtime = config["runtime"]
     model_cfg = config["model"]
+    semantic_classes = model_cfg["sam3_classes"]
 
     projector = PointCloudProjector(
         stride=int(proj_cfg["stride"]),
         fov_degrees=float(proj_cfg["fov_degrees"]),
         min_z=float(proj_cfg["filter_min_z"]),
         max_z=float(proj_cfg["filter_max_z"]),
-        num_classes=len(model_cfg["yolo_classes"]),
+        num_classes=len(semantic_classes),
     )
     depth_filter = DepthFilter(
         enabled=bool(filter_cfg["enabled"]),
