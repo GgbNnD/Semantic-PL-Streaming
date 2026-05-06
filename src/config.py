@@ -73,6 +73,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "danger_z": 3.0,
         "warning_z": 6.0,
     },
+    "vlm": {
+        "backend": "local_qwen3_vl",
+        "qwen3_vl_model_id": "Qwen/Qwen3-VL-2B-Instruct",
+        "qwen3_vl_local_dir": "models/qwen3-vl-2b-instruct",
+        "qwen3_vl_max_memory_gb": 6.0,
+        "qwen3_vl_max_new_tokens": 256,
+    },
 }
 
 

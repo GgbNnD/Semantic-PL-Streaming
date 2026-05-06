@@ -8,7 +8,7 @@
        -> OpenCV/Open3D 可视化 -> 本地规则决策 -> 性能报告
 ```
 
-当前版本不依赖云端 VLM API。决策层默认使用本地规则输出中文风险建议，后续拿到 Qwen-VL/DashScope API key 后，可以在 `src/decision.py` 中扩展云端 VLM 客户端。
+当前版本不依赖云端 VLM API。决策层默认使用本地规则输出中文风险建议，也已支持本地 Qwen3-VL 对关键帧和结构化指标做视觉语言决策分析。
 
 ## 当前能力
 
@@ -21,6 +21,7 @@
 - 3D 文件输出：关键帧点云保存为 Open3D 可打开的 `.ply` 文件。
 - 交互查看：支持 Open3D 打开 PLY，也可配置实时 Open3D 点云窗口。
 - 无 API 决策：根据最近语义目标、中心通道占比和伪距离输出本地避障建议。
+- 本地 VLM：在 8GB 显存 RTX 4060 Laptop 上默认部署 `Qwen/Qwen3-VL-2B-Instruct`。
 - 自动自评：每次演示/基准测试结束后生成效果评估和改进建议。
 
 ## 目录结构
@@ -39,7 +40,11 @@
 ├── benchmarks/                   # benchmark 输出
 ├── src/
 │   ├── prepare_assets.py          # 下载/准备模型和演示素材
+│   ├── prepare_qwen3_vl.py        # 下载/准备本地 Qwen3-VL 权重
 │   ├── run_demo.py                # 运行完整本地视觉闭环
+│   ├── qwen3_vl_chat.py           # 使用本地 Qwen3-VL 分析关键帧
+│   ├── qwen3_vl_local.py          # 本地 Qwen3-VL 推理封装
+│   ├── ui_app.py                  # 浏览器实时决策 UI
 │   ├── benchmark.py               # CPU/GPU 点云反投影性能对比
 │   ├── decide.py                  # 单独运行本地决策
 │   ├── config.py                  # 配置读取与路径解析
@@ -82,7 +87,7 @@ cd /home/cells/ai
 如果换到一台新机器，至少需要安装：
 
 ```bash
-python -m pip install -U numba open3d transformers opencv-python "ultralytics>=8.3.237" timm matplotlib pyyaml requests
+python -m pip install -U numba open3d transformers accelerate opencv-python "ultralytics>=8.3.237" timm matplotlib pyyaml requests modelscope qwen-vl-utils sentencepiece protobuf
 ```
 
 注意：PyTorch CUDA 版本最好按机器 CUDA/驱动重新安装，不建议盲目复制 pip 命令。
@@ -126,6 +131,25 @@ python -m src.benchmark --video data/input/demo.mp4 --max-frames 60
 python -m src.decide --snapshot outputs/keyframes/frame_0000.jpg
 ```
 
+下载并运行本地 Qwen3-VL：
+
+```bash
+python -m src.prepare_qwen3_vl --source modelscope
+python -m src.qwen3_vl_chat --image outputs/keyframes/frame_0090.jpg --metrics outputs/decision/latest_scene_metrics.json
+```
+
+启动浏览器实时决策 UI：
+
+```bash
+python -m src.ui_app --host 127.0.0.1 --port 7860
+```
+
+UI 默认使用本地 `Qwen/Qwen3-VL-2B-Instruct` 做右侧决策，并把左侧视频放慢到每帧约 `250ms`、每 `30` 帧更新一次 VLM 决策，避免 8GB 显存下频繁推理卡死。需要切回原来的 Depth/SAM3 + 本地规则链路时，可在页面右上角切换为“本地规则”，或用命令行启动：
+
+```bash
+python -m src.ui_app --decision-backend local_rules --decision-stride 1 --frame-delay-ms 0
+```
+
 打开最近生成的 PLY 点云：
 
 ```bash
@@ -142,6 +166,7 @@ python -m src.view_pointcloud
 - `outputs/pointclouds/*.ply`：Open3D 点云文件。
 - `outputs/decision/latest_scene_metrics.json`：本地决策使用的结构化指标。
 - `outputs/decision/decision_report.txt`：中文风险等级与避障建议。
+- `outputs/decision/qwen3_vl_report.txt`：本地 Qwen3-VL 生成的关键帧视觉语言分析。
 - `outputs/run_summary.md`：本次运行摘要。
 - `outputs/self_evaluation.md`：本次演示效果自评和下一步改进建议。
 
@@ -169,6 +194,9 @@ python -m src.view_pointcloud
 - `visualization.live_open3d`：是否开启实时 Open3D 交互窗口，远程终端建议保持 `false`。
 - `evaluation.enabled`：是否在每次运行后自动生成自评报告。
 - `decision.danger_z` / `decision.warning_z`：本地规则决策阈值。
+- `vlm.qwen3_vl_model_id`：本地 Qwen3-VL 模型 ID，当前默认 `Qwen/Qwen3-VL-2B-Instruct`。
+- `vlm.qwen3_vl_local_dir`：本地 Qwen3-VL 权重目录。
+- `vlm.qwen3_vl_max_memory_gb`：加载 Qwen3-VL 时给 GPU 的显存预算，8GB 显卡建议保留在 `6.0` 左右。
 
 建议调参顺序：
 
@@ -178,6 +206,35 @@ python -m src.view_pointcloud
 4. 最后根据画面效果调 `projection.invert_depth` 和伪距离范围。
 
 ## 核心数据流
+
+### 本地 Qwen3-VL 部署
+
+入口：`src/prepare_qwen3_vl.py`、`src/qwen3_vl_chat.py`
+
+本机硬件是 NVIDIA RTX 4060 Laptop GPU 8GB，因此默认选择 `Qwen/Qwen3-VL-2B-Instruct`。2B 权重约 4GB，配合 `device_map="auto"` 和 6GB GPU 显存预算可以在本机完成图像问答；4B/8B 版本建议优先考虑量化、CPU offload 或更大显存后再测试。
+
+依赖已安装在 `alg` 环境中：
+
+```bash
+python -m pip install -U transformers accelerate modelscope qwen-vl-utils sentencepiece protobuf
+```
+
+准备权重：
+
+```bash
+python -m src.prepare_qwen3_vl --source modelscope
+```
+
+对关键帧生成 VLM 决策报告：
+
+```bash
+python -m src.qwen3_vl_chat \
+  --image outputs/keyframes/frame_0090.jpg \
+  --metrics outputs/decision/latest_scene_metrics.json \
+  --max-new-tokens 128
+```
+
+输出文本保存到 `outputs/decision/qwen3_vl_report.txt`。
 
 ### 1. 深度估计
 

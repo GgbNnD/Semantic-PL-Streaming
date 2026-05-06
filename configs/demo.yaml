@@ -69,3 +69,11 @@ decision:
   center_band_ratio: 0.40
   danger_z: 3.0
   warning_z: 6.0
+
+vlm:
+  # RTX 4060 Laptop 8GB 显存优先选择 Qwen3-VL-2B-Instruct；4B/8B 建议使用量化版本另行测试。
+  backend: local_qwen3_vl
+  qwen3_vl_model_id: Qwen/Qwen3-VL-2B-Instruct
+  qwen3_vl_local_dir: models/qwen3-vl-2b-instruct
+  qwen3_vl_max_memory_gb: 6.0
+  qwen3_vl_max_new_tokens: 256
